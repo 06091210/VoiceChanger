@@ -124,34 +124,64 @@ async function startAudio() {
     btnStart.disabled=true;btnStop.disabled=false;
   }
 }*/
+let audioContext, mic, source, gainNode, biquadFilter, waveShaper, pitchShifter;
 
+//async function start() {
+  try {
+    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    mic = await navigator.mediaDevices.getUserMedia({ audio: true });
+    source = audioContext.createMediaStreamSource(mic);
 
+    // 音量調整
+    gainNode = audioContext.createGain();
+    gainNode.gain.value = parseFloat(document.getElementById("volume").value);
 
-//async function startVoiceChanger() {
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  const source = audioCtx.createMediaStreamSource(stream);
+    // 男声のガラガラ音を軽減（中低音を少し削る）
+    biquadFilter = audioContext.createBiquadFilter();
+    biquadFilter.type = "highpass";
+    biquadFilter.frequency.value = 180; // 180Hz以下をカット
 
-  // ピッチシフト（再生速度変更）
-  const pitchNode = audioCtx.createBufferSource();
-  const processor = audioCtx.createScriptProcessor(1024, 1, 1);
-  
-  // 周波数補正（フォルマント風EQ）
-  const biquad = audioCtx.createBiquadFilter();
-  biquad.type = "peaking";
-  biquad.frequency.value = 2000 * formantShift; // 中高域を持ち上げ
-  biquad.gain.value = 6; // dB
-  
-  // 音量コントロール
-  const gainNode = audioCtx.createGain();
-  gainNode.gain.value = 0.5;
+    // 声のツヤを出す（軽い歪み）
+    waveShaper = audioContext.createWaveShaper();
+    waveShaper.curve = makeDistortionCurve(20); // 軽め
+    waveShaper.oversample = '4x';
 
-  // 出力接続
-  source.connect(biquad);
-  biquad.connect(gainNode);
-  gainNode.connect(audioCtx.destination);
+    // ピッチシフト処理
+    pitchShifter = audioContext.createDelay();
+    pitchShifter.delayTime.value = 0.01; // 微妙な遅延を与える
 
-  console.log("Voice changer started!");
+    const modulator = audioContext.createOscillator();
+    const modGain = audioContext.createGain();
+    modGain.gain.value = 0.005;
+    modulator.frequency.value = 6.5; // 周波数を少し上げる（女声風）
+    modulator.connect(modGain).connect(pitchShifter.delayTime);
+    modulator.start();
+
+    // 出力接続
+    source
+      .connect(biquadFilter)
+      .connect(waveShaper)
+      .connect(pitchShifter)
+      .connect(gainNode)
+      .connect(audioContext.destination);
+
+    console.log("Voice changer (male → female) active");
+  } catch (err) {
+    alert("マイクが取得できませんでした: " + err.message);
+  }
+}
+
+// 歪みカーブ関数
+function makeDistortionCurve(amount) {
+  const k = typeof amount === "number" ? amount : 50;
+  const n_samples = 44100;
+  const curve = new Float32Array(n_samples);
+  const deg = Math.PI / 180;
+  for (let i = 0; i < n_samples; ++i) {
+    const x = (i * 2) / n_samples - 1;
+    curve[i] = ((3 + k) * x * 20 * deg) / (Math.PI + k * Math.abs(x));
+  }
+  return curve;
 }
 
 
