@@ -1,4 +1,4 @@
-<!--<!doctype html>
+<!doctype html>
 <html lang="ja">
 <head>
 <meta charset="utf-8" />
@@ -61,9 +61,11 @@ let sourceNode = null;
 let gainOut = null;
 let workletNode = null;
 let scriptNode = null;
+let pitchShift = 1.4;  // ピッチを1.0→1.4倍で女性っぽく
+let formantShift = 1.3; // フォルマント（声質）補正倍率
 
 async function startAudio() {
-  if (audioContext) return;
+/*  if (audioContext) return;
   audioContext = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: "interactive" });
   await audioContext.resume();
 
@@ -121,7 +123,37 @@ async function startAudio() {
     stateEl.textContent='再生中 (ScriptProcessor)';
     btnStart.disabled=true;btnStop.disabled=false;
   }
+}*/
+
+
+
+//async function startVoiceChanger() {
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const source = audioCtx.createMediaStreamSource(stream);
+
+  // ピッチシフト（再生速度変更）
+  const pitchNode = audioCtx.createBufferSource();
+  const processor = audioCtx.createScriptProcessor(1024, 1, 1);
+  
+  // 周波数補正（フォルマント風EQ）
+  const biquad = audioCtx.createBiquadFilter();
+  biquad.type = "peaking";
+  biquad.frequency.value = 2000 * formantShift; // 中高域を持ち上げ
+  biquad.gain.value = 6; // dB
+  
+  // 音量コントロール
+  const gainNode = audioCtx.createGain();
+  gainNode.gain.value = 0.5;
+
+  // 出力接続
+  source.connect(biquad);
+  biquad.connect(gainNode);
+  gainNode.connect(audioCtx.destination);
+
+  console.log("Voice changer started!");
 }
+
 
 function stopAudio(){
   if(!audioContext)return;
@@ -139,119 +171,5 @@ btnStart.addEventListener('click',async()=>{
 });
 btnStop.addEventListener('click',()=>stopAudio());
 </script>
-</body>
-</html>-->
-<!DOCTYPE html>
-<html lang="ja">
-<head>
-  <meta charset="UTF-8">
-  <title>リアルタイムボイスチェンジャー</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <style>
-    body {
-      font-family: "Segoe UI", sans-serif;
-      text-align: center;
-      padding: 2em;
-      background: linear-gradient(180deg, #d0e7ff, #f8faff);
-      color: #333;
-    }
-    button, input[type="range"], select {
-      margin: 1em;
-      padding: 0.5em 1em;
-      font-size: 1.1em;
-      border-radius: 10px;
-      border: 1px solid #ccc;
-    }
-    label { display: block; margin-top: 1em; }
-  </style>
-</head>
-<body>
-  <h1>🎧 リアルタイムボイスチェンジャー</h1>
-
-  <button id="startBtn">Start</button>
-
-  <label>音量:
-    <input id="volume" type="range" min="0" max="1" step="0.01" value="0.5">
-  </label>
-
-  <label>モード選択:
-    <select id="mode">
-      <option value="normal">ノーマル</option>
-      <option value="female">女性風（高ピッチ・フォルマント補正）</option>
-      <option value="male">男性風（低ピッチ・フォルマント補正）</option>
-      <option value="chipmunk">チップマンク風</option>
-      <option value="deep">低音強化</option>
-    </select>
-  </label>
-
-  <script>
-    let audioCtx, source, gainNode, pitchShiftNode;
-    let modeSelect = document.getElementById('mode');
-    let volumeSlider = document.getElementById('volume');
-
-    async function start() {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      audioCtx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'interactive' });
-
-      source = audioCtx.createMediaStreamSource(stream);
-      gainNode = audioCtx.createGain();
-      gainNode.gain.value = volumeSlider.value;
-
-      // --- ピッチシフト用ノード (ScriptProcessorNode で軽量処理) ---
-      const bufferSize = 1024;
-      const scriptNode = audioCtx.createScriptProcessor(bufferSize, 1, 1);
-      const delay = new Float32Array(bufferSize).fill(0);
-      let delayIndex = 0;
-      let pitchFactor = 1.0;
-
-      scriptNode.onaudioprocess = (e) => {
-        const input = e.inputBuffer.getChannelData(0);
-        const output = e.outputBuffer.getChannelData(0);
-        for (let i = 0; i < bufferSize; i++) {
-          delay[delayIndex] = input[i];
-          const readIndex = (delayIndex - bufferSize / pitchFactor + bufferSize) % bufferSize;
-          const index1 = Math.floor(readIndex);
-          const index2 = (index1 + 1) % bufferSize;
-          const frac = readIndex - index1;
-          output[i] = delay[index1] * (1 - frac) + delay[index2] * frac;
-          delayIndex = (delayIndex + 1) % bufferSize;
-        }
-      };
-
-      // --- モード別ピッチ設定 ---
-      function setMode() {
-        switch (modeSelect.value) {
-          case "female":
-            pitchFactor = 1.5; // 約+7半音
-            break;
-          case "male":
-            pitchFactor = 0.7; // 約-5半音
-            break;
-          case "chipmunk":
-            pitchFactor = 2.0;
-            break;
-          case "deep":
-            pitchFactor = 0.5;
-            break;
-          default:
-            pitchFactor = 1.0;
-        }
-      }
-      modeSelect.onchange = setMode;
-      setMode();
-
-      volumeSlider.oninput = () => {
-        gainNode.gain.value = volumeSlider.value;
-      };
-
-      source.connect(scriptNode);
-      scriptNode.connect(gainNode);
-      gainNode.connect(audioCtx.destination);
-    }
-
-    document.getElementById("startBtn").onclick = () => {
-      start().catch(err => alert("マイク取得エラー: " + err.message));
-    };
-  </script>
 </body>
 </html>
