@@ -1,4 +1,4 @@
-<!doctype html>
+<!--<!doctype html>
 <html lang="ja">
 <head>
 <meta charset="utf-8" />
@@ -140,4 +140,164 @@ btnStart.addEventListener('click',async()=>{
 btnStop.addEventListener('click',()=>stopAudio());
 </script>
 </body>
+</html>-->
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>リアルタイムボイスチェンジャー</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#4A90E2">
+<style>
+body {
+  font-family: system-ui, sans-serif;
+  text-align: center;
+  padding: 2em;
+  background: linear-gradient(180deg, #e0f2ff, #ffffff);
+}
+button, select, input[type=range] {
+  margin: 0.5em;
+  padding: 0.7em 1.2em;
+  border-radius: 10px;
+  border: none;
+  font-size: 1em;
+  background: #4A90E2;
+  color: white;
+  cursor: pointer;
+}
+button:hover { background: #357ABD; }
+label { display: block; margin-top: 1em; font-weight: bold; color: #333; }
+.range-label { color: #555; font-size: 0.9em; }
+input[type=range] {
+  width: 200px;
+  accent-color: #4A90E2;
+}
+.container {
+  max-width: 400px;
+  margin: 0 auto;
+  background: white;
+  border-radius: 20px;
+  box-shadow: 0 0 15px rgba(0,0,0,0.1);
+  padding: 1.5em;
+}
+</style>
+</head>
+<body>
+<div class="container">
+  <h2>🎙️ リアルタイムボイスチェンジャー</h2>
+
+  <button id="start">Start</button>
+
+  <label>プリセット:
+    <select id="voiceType">
+      <option value="neutral">Normal</option>
+      <option value="male">Male</option>
+      <option value="female">Female</option>
+      <option value="robot">Robot</option>
+    </select>
+  </label>
+
+  <label>Volume
+    <input id="volume" type="range" min="0" max="1" step="0.01" value="0.5">
+    <span class="range-label" id="volumeVal">0.5</span>
+  </label>
+
+  <label>Pitch Shift（トーン）
+    <input id="pitch" type="range" min="-0.005" max="0.005" step="0.0005" value="0">
+    <span class="range-label" id="pitchVal">0</span>
+  </label>
+
+  <label>Formant Frequency（声の響き）
+    <input id="formant" type="range" min="300" max="3000" step="50" value="1000">
+    <span class="range-label" id="formantVal">1000Hz</span>
+  </label>
+</div>
+
+<script>
+let context, source, pitchNode, gainNode, formantFilter, filterNode, compressor;
+
+document.getElementById("start").onclick = async () => {
+  context = new AudioContext({ latencyHint: "interactive" });
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  source = context.createMediaStreamSource(stream);
+
+  pitchNode = context.createDelay(0.05);
+  formantFilter = context.createBiquadFilter();
+  filterNode = context.createBiquadFilter();
+  gainNode = context.createGain();
+  compressor = context.createDynamicsCompressor();
+
+  // 初期値設定
+  gainNode.gain.value = parseFloat(document.getElementById("volume").value);
+  filterNode.type = "highpass";
+  filterNode.frequency.value = 120;
+  formantFilter.type = "peaking";
+  formantFilter.frequency.value = 1000;
+  formantFilter.Q.value = 1;
+
+  // 接続
+  source.connect(pitchNode);
+  pitchNode.connect(formantFilter);
+  formantFilter.connect(filterNode);
+  filterNode.connect(compressor);
+  compressor.connect(gainNode);
+  gainNode.connect(context.destination);
+
+  // 各スライダー操作
+  const pitchSlider = document.getElementById("pitch");
+  const formantSlider = document.getElementById("formant");
+  const volumeSlider = document.getElementById("volume");
+
+  pitchSlider.oninput = e => {
+    const v = parseFloat(e.target.value);
+    pitchNode.delayTime.value = v;
+    document.getElementById("pitchVal").textContent = v.toFixed(4);
+  };
+
+  formantSlider.oninput = e => {
+    const v = parseFloat(e.target.value);
+    formantFilter.frequency.value = v;
+    document.getElementById("formantVal").textContent = `${v}Hz`;
+  };
+
+  volumeSlider.oninput = e => {
+    const v = parseFloat(e.target.value);
+    gainNode.gain.value = v;
+    document.getElementById("volumeVal").textContent = v.toFixed(2);
+  };
+
+  // プリセット切り替え
+  document.getElementById("voiceType").onchange = e => {
+    const type = e.target.value;
+    switch (type) {
+      case "male":
+        pitchSlider.value = 0.002;
+        formantSlider.value = 800;
+        break;
+      case "female":
+        pitchSlider.value = -0.002;
+        formantSlider.value = 1800;
+        break;
+      case "robot":
+        pitchSlider.value = 0.004;
+        formantSlider.value = 400;
+        break;
+      default:
+        pitchSlider.value = 0;
+        formantSlider.value = 1000;
+    }
+    // スライダーの値反映
+    pitchSlider.oninput({ target: pitchSlider });
+    formantSlider.oninput({ target: formantSlider });
+  };
+};
+
+// PWA対応
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('service-worker.js');
+}
+</script>
+</body>
 </html>
+
