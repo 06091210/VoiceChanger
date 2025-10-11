@@ -174,8 +174,19 @@
       mediaStream = await navigator.mediaDevices.getUserMedia({audio:true});
 
       // MediaRecorder approach: record short chunks and play back with playbackRate
-      const options = { mimeType: 'audio/webm;codecs=opus' };
-      mediaRecorder = new MediaRecorder(mediaStream, options);
+// 変更後
+let options = { mimeType: '' };
+if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
+  options.mimeType = 'audio/webm;codecs=opus';
+} else if (MediaRecorder.isTypeSupported('audio/mp4')) {
+  options.mimeType = 'audio/mp4';
+} else if (MediaRecorder.isTypeSupported('audio/aac')) {
+  options.mimeType = 'audio/aac';
+} else {
+  options = {};
+}
+mediaRecorder = new MediaRecorder(mediaStream, options);
+
 
       mediaRecorder.ondataavailable = async (e) => {
         const blob = e.data;
