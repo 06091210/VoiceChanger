@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>PWA リアルタイムボイスチェンジャー（プロトタイプ）</title>
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#2274A5">
+  <style>
+    :root{font-family:system-ui,-apple-system,"Hiragino Kaku Gothic ProN",Meiryo,Segoe UI,Roboto;--bg:#0f1720;--card:#0b1220;--accent:#2274A5;--muted:#9aa6b2;color:#e6eef6}
+    html,body{height:100%;margin:0;background:linear-gradient(180deg,var(--bg),#071021);color:var(--muted)}
+    .wrap{max-width:920px;margin:28px auto;padding:18px;background:linear-gradient(180deg,rgba(255,255,255,0.02),rgba(0,0,0,0.06));border-radius:14px;box-shadow:0 8px 30px rgba(0,0,0,0.6)}
+    h1{margin:0 0 8px;font-size:20px;color:#fff}
+    p.lead{margin:0 0 18px;color:#bcd3e6}
+    .controls{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:12px}
+    button{background:var(--accent);color:white;border:0;padding:10px;border-radius:10px;font-weight:600;cursor:pointer}
+    button.ghost{background:transparent;border:1px solid rgba(255,255,255,0.06);color:var(--muted)}
+    .sliders{display:grid;grid-template-columns:1fr;gap:10px}
+    label{font-size:13px;color:#d7e6f5}
+    input[type=range]{width:100%}
+    .status{font-size:13px;color:#a9c0d6;margin-top:8px}
+    .footer{margin-top:14px;font-size:12px;color:#8ea5bd}
+    .effects{display:flex;gap:8px;flex-wrap:wrap}
+    .chip{padding:6px 10px;background:rgba(255,255,255,0.03);border-radius:999px;border:1px solid rgba(255,255,255,0.03);font-size:13px}
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <h1>リアルタイム・ボイスチェンジャー（PWAプロトタイプ）</h1>
+    <p class="lead">オフラインで動くシンプルな試作。マイクを許可して「Start」を押すと音声を取得します。録音→再生の短いチャンクを使ってピッチを変えます。</p>
+
+    <div class="controls">
+      <button id="btnStart">Start</button>
+      <button id="btnStop" class="ghost" disabled>Stop</button>
+      <button id="btnInstall" class="ghost">Install PWA</button>
+      <div style="display:flex;flex-direction:column;gap:6px;">
+        <label>処理レイテンシ（ms）<span id="latVal">200</span></label>
+        <input type="range" id="latency" min="80" max="600" value="200">
+      </div>
+      <div style="display:flex;flex-direction:column;gap:6px;">
+        <label>ピッチ（半音）<span id="pitchVal">0</span></label>
+        <input type="range" id="pitch" min="-12" max="12" value="0">
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+      <div class="sliders">
+        <label>Vocoder-ish / Robot (Bitcrusher amount)</label>
+        <input type="range" id="bitCrush" min="0" max="0.99" step="0.01" value="0.0">
+      </div>
+      <div class="sliders">
+        <label>Reverb (wet)</label>
+        <input type="range" id="reverbWet" min="0" max="1" step="0.01" value="0.12">
+      </div>
+    </div>
+
+    <div style="margin-top:12px;">
+      <div class="effects">
+        <div class="chip">オフライン対応済み (Service Worker)</div>
+        <div class="chip">録音チャンク方式（低遅延）</div>
+        <div class="chip">追加改良: AudioWorklet推奨</div>
+      </div>
+      <div class="status" id="status">状態: 停止中</div>
+    </div>
+
+    <div class="footer">注意: 音質は試作レベルです。品質向上や低遅延化（AudioWorklet）に対応可能。</div>
+  </main>
+
+  <script>
+  // --- Globals
+  let audioContext = null;
+  let mediaStream = null;
+  let mediaRecorder = null;
+  let recording = false;
+  let sourceNode = null;
+  let playGain = null;
+  let convolver = null;
+  let convolverGain = null;
+  let bitCrushNode = null;
+
+  const btnStart = document.getElementById('btnStart');
+  const btnStop = document.getElementById('btnStop');
+  const btnInstall = document.getElementById('btnInstall');
+  const statusEl = document.getElementById('status');
+
+  const pitchSlider = document.getElementById('pitch');
+  const pitchVal = document.getElementById('pitchVal');
+  const latencySlider = document.getElementById('latency');
+  const latVal = document.getElementById('latVal');
+  const bitCrush = document.getElementById('bitCrush');
+  const reverbWet = document.getElementById('reverbWet');
+
+  pitchSlider.addEventListener('input', ()=> pitchVal.textContent = pitchSlider.value);
+  latencySlider.addEventListener('input', ()=> latVal.textContent = latencySlider.value);
+
+  // create a simple convolver impulse for reverb (small room)
+  function createImpulseResponse(context, duration=1.2, decay=2.0) {
+    const sr = context.sampleRate;
+    const length = sr * duration;
+    const impulse = context.createBuffer(2, length, sr);
+    for (let c=0;c<2;c++){
+      const channel = impulse.getChannelData(c);
+      for (let i=0;i<length;i++){
+        channel[i] = (Math.random()*2-1) * Math.pow(1 - i/length, decay);
+      }
+    }
+    return impulse;
+  }
+
+  // very lightweight bitcrusher using ScriptProcessor (not perfect but ok for prototype)
+  function createBitCrusher(context, bits=8, normFreq=0.1) {
+    const node = context.createScriptProcessor(4096,1,1);
+    let phase = 0, last = 0;
+    node.onaudioprocess = function(e){
+      const input = e.inputBuffer.getChannelData(0);
+      const output = e.outputBuffer.getChannelData(0);
+      const step = Math.pow(1/2, bits);
+      for (let i=0;i<input.length;i++){
+        phase += normFreq;
+        if (phase >= 1.0) { phase -= 1.0; last = step * Math.floor(input[i]/step + 0.5); }
+        output[i] = last;
+      }
+    };
+    return node;
+  }
+
+  // Utility: play AudioBuffer immediately with playbackRate and connect to effects
+  function playBuffer(buffer, playbackRate=1.0) {
+    if (!audioContext) return;
+    const src = audioContext.createBufferSource();
+    src.buffer = buffer;
+    src.playbackRate.value = playbackRate;
+
+    const filter = audioContext.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.value = 12000; // gentle
+
+    src.connect(filter);
+    // bitcrusher
+    if (bitCrushNode) filter.connect(bitCrushNode);
+    else filter.connect(convolverGain);
+
+    // convolver wet/dry handled by convolverGain/node chain
+    if (bitCrushNode) {
+      bitCrushNode.connect(convolverGain);
+    }
+
+    src.start();
+    // release automatically
+    src.onended = ()=>{
+      try { src.disconnect(); } catch(e){}
+    };
+  }
+
+  // Start capturing mic and set up processing graph
+  async function startProcessing() {
+    if (recording) return;
+    try{
+      audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      playGain = audioContext.createGain();
+      playGain.gain.value = 1.0;
+      convolver = audioContext.createConvolver();
+      convolver.buffer = createImpulseResponse(audioContext, 1.4, 2.0);
+      convolverGain = audioContext.createGain();
+      convolverGain.gain.value = Number(reverbWet.value);
+      convolver.connect(convolverGain);
+      convolverGain.connect(playGain);
+      playGain.connect(audioContext.destination);
+
+      bitCrushNode = createBitCrusher(audioContext, 16, 0.05);
+      // bitCrushNode connects into convolverGain in playBuffer
+
+      // getUserMedia
+      mediaStream = await navigator.mediaDevices.getUserMedia({audio:true});
+
+      // MediaRecorder approach: record short chunks and play back with playbackRate
+      const options = { mimeType: 'audio/webm;codecs=opus' };
+      mediaRecorder = new MediaRecorder(mediaStream, options);
+
+      mediaRecorder.ondataavailable = async (e) => {
+        const blob = e.data;
+        if (blob.size === 0) return;
+        const array = await blob.arrayBuffer();
+        try{
+          const buffer = await audioContext.decodeAudioData(array.slice(0));
+          // calculate playbackRate from semitone slider: rate = 2^(semitones/12)
+          const semitones = Number(pitchSlider.value);
+          const rate = Math.pow(2, semitones/12);
+          playBuffer(buffer, rate);
+        } catch(err){
+          // Some browsers (Firefox) can't decode tiny live blobs sometimes; ignore.
+          console.warn('decode error', err);
+        }
+      };
+
+      // record in short timeslices
+      const timeslice = Math.max(80, Number(latencySlider.value)); // ms
+      mediaRecorder.start(timeslice);
+
+      // UI
+      recording = true;
+      btnStart.disabled = true; btnStop.disabled = false;
+      statusEl.textContent = '状態: マイク取得中 — 録音中 (チャンク ' + timeslice + 'ms)';
+
+      // update reverb and bitcrush live
+      reverbWet.addEventListener('input', ()=>{ if(convolverGain) convolverGain.gain.value = Number(reverbWet.value); });
+      bitCrush.addEventListener('input', ()=>{
+        const v = Number(bitCrush.value);
+        // map [0,0.99] to bits between 1 and 16
+        const bits = Math.max(1, Math.round(16 - v*15));
+        // recreate bitcrusher with new bits
+        try{ bitCrushNode.disconnect(); }catch(e){}
+        bitCrushNode = createBitCrusher(audioContext, bits, 0.05);
+      });
+
+    } catch(err){
+      console.error(err);
+      alert('マイクが取得できませんでした: '+err.message);
+      stopProcessing();
+    }
+  }
+
+  function stopProcessing(){
+    if (!recording) return;
+    try{
+      mediaRecorder.stop();
+    } catch(e){ }
+    try{ mediaStream.getTracks().forEach(t=>t.stop()); } catch(e){}
+    try{ audioContext.close(); } catch(e){}
+    audioContext = null; mediaStream = null; mediaRecorder = null; recording = false;
+    btnStart.disabled = false; btnStop.disabled = true;
+    statusEl.textContent = '状態: 停止中';
+  }
+
+  btnStart.addEventListener('click', ()=> startProcessing());
+  btnStop.addEventListener('click', ()=> stopProcessing());
+
+  // PWA: install prompt handling
+  let deferredPrompt = null;
+  window.addEventListener('beforeinstallprompt', (e)=>{
+    e.preventDefault(); deferredPrompt = e; btnInstall.style.display = 'inline-block';
+  });
+  btnInstall.addEventListener('click', async ()=>{
+    if (!deferredPrompt) return alert('インストール可能になっていません');
+    deferredPrompt.prompt();
+    const resp = await deferredPrompt.userChoice;
+    deferredPrompt = null; btnInstall.style.display='none';
+  });
+
+  // register service worker
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/service-worker.js').then(reg=>{
+      console.log('sw registered', reg);
+    }).catch(err=>{
+      console.warn('sw register failed', err);
+    });
+  }
+  </script>
+</body>
+</html>
+
+
+
+
+/* ===================== manifest.json ===================== */
+/* Place this file at /manifest.json in your repo */
+
+/*
+{
+  "name": "PWA Voice Changer (Prototype)",
+  "short_name": "VoiceChanger",
+  "start_url": "/index.html",
+  "display": "standalone",
+  "background_color": "#071021",
+  "theme_color": "#2274A5",
+  "icons": [
+    {"src":"/icon-192.png","sizes":"192x192","type":"image/png"},
+    {"src":"/icon-512.png","sizes":"512x512","type":"image/png"}
+  ]
+}
+*/
