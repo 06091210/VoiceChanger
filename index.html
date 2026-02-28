@@ -4,49 +4,21 @@
 <meta charset="UTF-8">
 <title>Voice Engine 4.5</title>
 <style>
-body { background:#111; color:#fff; font-family:sans-serif; }
-input { width:300px; }
 </style>
 </head>
 <body>
-
-<h2>Voice Engine 4.5</h2>
-
-<button id="start">START</button>
-<br><br>
-
-Pitch Shift: <input type="range" id="pitch" min="0.5" max="2" step="0.01" value="1"><br>
-Formant Shift: <input type="range" id="formant" min="0.5" max="2" step="0.01" value="1"><br>
-Noise: <input type="range" id="noise" min="0" max="0.2" step="0.001" value="0"><br>
-Robot: <input type="range" id="robot" min="0" max="1000" step="1" value="0"><br>
-Drive: <input type="range" id="drive" min="1" max="10" step="0.1" value="1"><br>
-
+<button onclick="start()">Start</button>
 <script>
-let ctx, node;
+async function start() {
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  const audioCtx = new AudioContext();
+  await audioCtx.audioWorklet.addModule('psola-processor.js');
 
-document.getElementById("start").onclick = async () => {
-  ctx = new AudioContext({sampleRate:48000});
-  await ctx.audioWorklet.addModule("processor.js");
+  const source = audioCtx.createMediaStreamSource(stream);
+  const psolaNode = new AudioWorkletNode(audioCtx, 'psola-processor');
 
-  const stream = await navigator.mediaDevices.getUserMedia({audio:true});
-  const src = ctx.createMediaStreamSource(stream);
-
-  node = new AudioWorkletNode(ctx, "voice-engine");
-
-  src.connect(node);
-  node.connect(ctx.destination);
-
-  setupControls();
-};
-
-function setupControls(){
-  ["pitch","formant","noise","robot","drive"].forEach(id=>{
-    document.getElementById(id).oninput = e=>{
-      node.port.postMessage({param:id,value:parseFloat(e.target.value)});
-    };
-  });
+  source.connect(psolaNode).connect(audioCtx.destination);
 }
 </script>
-
 </body>
 </html>
